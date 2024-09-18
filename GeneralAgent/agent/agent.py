@@ -2,7 +2,7 @@
 import os
 import logging
 from typing import Union
-from GeneralAgent.memory import StackMemory
+from GeneralAgent.memory import NormalMemory
 from GeneralAgent.interpreter import Interpreter
 from GeneralAgent.interpreter import KnowledgeInterpreter
 from GeneralAgent.interpreter import RoleInterpreter, PythonInterpreter
@@ -90,7 +90,7 @@ class Agent():
         self.workspace = workspace
         self.disable_python_run = disable_python_run
         self.hide_python_code = hide_python_code
-        self.memory = StackMemory(serialize_path=self._memory_path)
+        self.memory = NormalMemory(serialize_path=self._memory_path)
         self.role_interpreter = RoleInterpreter(role=role, self_call=self_call)
         self.python_interpreter = PythonInterpreter(self, serialize_path=self._python_path)
         self.python_interpreter.function_tools = functions
@@ -104,12 +104,24 @@ class Agent():
         self.continue_run = continue_run
         self.knowledge_interpreter = KnowledgeInterpreter(workspace, knowledge_files=knowledge_files, rag_function=rag_function)
         self.interpreters = [self.role_interpreter, self.python_interpreter, self.knowledge_interpreter]
+        self.enter_index = None # 进入 with 语句时 self.memory.messages 的索引
         if output_callback is not None:
             self.output_callback = output_callback
         else:
             # 默认输出回调函数
             from GeneralAgent import skills
             self.output_callback = skills.output
+
+    def __enter__(self):
+        self.enter_index = len(self.memory.get_messages())  # Record the index of self.messages
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.clear_temporary_messages()
+            self.handle_exception(exc_type, exc_val, exc_tb)
+        self.clear_temporary_messages()
+        return False
 
     @property
     def _memory_path(self):
@@ -360,7 +372,7 @@ class Agent():
             outputer.process_text(str(e))
             outputer.flush()
             return True
-        
+
     def clear(self):
         """
         清除: 删除memory和python序列化文件。不会删除workspace和知识库。
@@ -369,8 +381,16 @@ class Agent():
             os.remove(self._memory_path)
         if self._python_path is not None and os.path.exists(self._python_path):
             os.remove(self._python_path)
-        self.memory = StackMemory(serialize_path=self._memory_path)
+        self.memory = NormalMemory(serialize_path=self._memory_path)
         self.python_interpreter = PythonInterpreter(self, serialize_path=self._python_path)
+
+    def clear_temporary_messages(self):
+        """
+        清除: 临时产生的数据
+        """
+        assert self.enter_index is not None
+        self.memory.recover(self.enter_index)
+        self.enter_index = None
 
 
 class _PythonCodeFilter():
